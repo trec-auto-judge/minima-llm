@@ -423,16 +423,69 @@ class MinimaLlmConfig:
         # Start with env config as base
         base = cls.from_env()
 
-        # Replace with YAML values where present
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MinimaLlmConfig":
+        """
+        Load MinimaLlmConfig from a dictionary.
+
+        Useful for judges that receive LlmConfigBase with a raw dict:
+
+            from minima_llm import MinimaLlmConfig, OpenAIMinimaLlm
+            full_config = MinimaLlmConfig.from_dict(llm_config.raw)
+            backend = OpenAIMinimaLlm(full_config)
+
+        Args:
+            data: Configuration dictionary (e.g., from YAML or LlmConfigBase.raw)
+
+        Returns:
+            MinimaLlmConfig instance with env as base, overlaid with dict values
+        """
         from dataclasses import replace
+
+        # Start with env config as base
+        base = cls.from_env()
+
+        # Build batch config if present
+        batch = base.batch
+        if "batch" in data:
+            batch_data = data["batch"]
+            batch = BatchConfig(
+                num_workers=batch_data.get("num_workers", batch.num_workers),
+                max_failures=batch_data.get("max_failures", batch.max_failures),
+                heartbeat_s=batch_data.get("heartbeat_s", batch.heartbeat_s),
+                stall_s=batch_data.get("stall_s", batch.stall_s),
+                print_first_failures=batch_data.get("print_first_failures", batch.print_first_failures),
+                keep_failure_summaries=batch_data.get("keep_failure_summaries", batch.keep_failure_summaries),
+            )
+
+        # Replace with dict values where present
         return replace(
             base,
             base_url=cls._normalize_base_url(data["base_url"]) if "base_url" in data else base.base_url,
             model=data["model"] if "model" in data else base.model,
             api_key=data["api_key"] if "api_key" in data else base.api_key,
+            batch=batch,
+            parasail=ParasailBatchConfig.from_dict(data.get("parasail")),
+            # Transport
+            max_outstanding=int(data["max_outstanding"]) if "max_outstanding" in data else base.max_outstanding,
+            rpm=int(data["rpm"]) if "rpm" in data else base.rpm,
+            timeout_s=float(data["timeout_s"]) if "timeout_s" in data else base.timeout_s,
+            # Retry
+            max_attempts=int(data["max_attempts"]) if "max_attempts" in data else base.max_attempts,
+            base_backoff_s=float(data["base_backoff_s"]) if "base_backoff_s" in data else base.base_backoff_s,
+            max_backoff_s=float(data["max_backoff_s"]) if "max_backoff_s" in data else base.max_backoff_s,
+            jitter=float(data["jitter"]) if "jitter" in data else base.jitter,
+            # Cooldown
+            cooldown_floor_s=float(data["cooldown_floor_s"]) if "cooldown_floor_s" in data else base.cooldown_floor_s,
+            cooldown_cap_s=float(data["cooldown_cap_s"]) if "cooldown_cap_s" in data else base.cooldown_cap_s,
+            cooldown_halflife_s=float(data["cooldown_halflife_s"]) if "cooldown_halflife_s" in data else base.cooldown_halflife_s,
+            # HTTP
+            compress_gzip=bool(data["compress_gzip"]) if "compress_gzip" in data else base.compress_gzip,
+            # Cache
             cache_dir=data["cache_dir"] if "cache_dir" in data else base.cache_dir,
             force_refresh=bool(data["force_refresh"]) if "force_refresh" in data else base.force_refresh,
-            parasail=ParasailBatchConfig.from_dict(data["parasail"]) if "parasail" in data else base.parasail,
         )
 
     # ----------------------------

@@ -981,3 +981,196 @@ def check_and_populate_cache(prefix: str, config: MinimaLlmConfig) -> None:
 
     else:
         print(f"\nUnknown status: {state.status}")
+
+
+# ----------------------------
+# CLI Batch Management Functions
+# ----------------------------
+
+def _get_state_dir(config: MinimaLlmConfig) -> Optional[Path]:
+    """Get the state directory from config."""
+    state_dir = config.parasail.state_dir or config.cache_dir
+    if state_dir:
+        return Path(state_dir)
+    return None
+
+
+def _list_batch_states(config: MinimaLlmConfig) -> List[Tuple[Path, BatchState]]:
+    """List all batch state files and their parsed states."""
+    state_dir = _get_state_dir(config)
+    if not state_dir or not state_dir.exists():
+        return []
+
+    results = []
+    for state_file in state_dir.glob("parasail_batch_*.json"):
+        try:
+            with open(state_file) as f:
+                data = json.load(f)
+            state = BatchState(
+                prefix=data["prefix"],
+                batch_id=data.get("batch_id"),
+                input_file_id=data.get("input_file_id"),
+                output_file_id=data.get("output_file_id"),
+                status=data.get("status", "unknown"),
+                created_at=data.get("created_at", 0),
+                custom_id_to_cache_key=data.get("custom_id_to_cache_key", {}),
+            )
+            results.append((state_file, state))
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Could not parse {state_file}: {e}")
+
+    return sorted(results, key=lambda x: x[1].created_at, reverse=True)
+
+
+def batch_status_overview(config: MinimaLlmConfig) -> None:
+    """Show status overview of all local batch state files."""
+    from .backend import OpenAIMinimaLlm
+    import datetime
+
+    states = _list_batch_states(config)
+
+    if not states:
+        print("No batch state files found.")
+        state_dir = _get_state_dir(config)
+        if state_dir:
+            print(f"State directory: {state_dir}")
+        else:
+            print("No state directory configured (set parasail.state_dir or cache_dir)")
+        return
+
+    print(f"Found {len(states)} batch state file(s):\n")
+
+    for state_file, state in states:
+        created = datetime.datetime.fromtimestamp(state.created_at).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Prefix: {state.prefix}")
+        print(f"  Status: {state.status}")
+        print(f"  Created: {created}")
+        print(f"  Batch ID: {state.batch_id or '<not submitted>'}")
+        print(f"  Requests: {len(state.custom_id_to_cache_key)}")
+        print(f"  State file: {state_file}")
+
+        # Check remote status for active batches
+        if state.batch_id and state.status in ("validating", "in_progress", "finalizing"):
+            print("  Checking remote status...")
+            backend = OpenAIMinimaLlm(config)
+            collector = ParasailBatchCollector(backend, state.prefix)
+            loop = asyncio.new_event_loop()
+            try:
+                batch_info = loop.run_until_complete(collector._get_batch_status(state.batch_id))
+                remote_status = batch_info.get("status", "unknown")
+                counts = batch_info.get("request_counts", {})
+                print(f"  Remote status: {remote_status}")
+                print(f"  Progress: {counts.get('completed', 0)}/{counts.get('total', '?')} done")
+            except Exception as e:
+                print(f"  Could not check remote status: {e}")
+            finally:
+                loop.close()
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                try:
+                    loop2.run_until_complete(backend.aclose())
+                finally:
+                    loop2.close()
+
+        print()
+
+
+def cancel_batch(batch_id: str, config: MinimaLlmConfig) -> None:
+    """Cancel a specific batch by its remote batch ID."""
+    from .backend import OpenAIMinimaLlm
+
+    backend = OpenAIMinimaLlm(config)
+
+    # Find state file with this batch_id
+    states = _list_batch_states(config)
+    state_file = None
+    for sf, state in states:
+        if state.batch_id == batch_id:
+            state_file = sf
+            break
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        # Create a dummy collector to use _cancel_batch
+        collector = ParasailBatchCollector(backend, "cancel")
+        result = loop.run_until_complete(collector._cancel_batch(batch_id))
+        print(f"Cancelled batch {batch_id}")
+        print(f"Result: {result}")
+
+        # Update local state if found
+        if state_file and state_file.exists():
+            with open(state_file) as f:
+                data = json.load(f)
+            data["status"] = "cancelled"
+            with open(state_file, "w") as f:
+                json.dump(data, f, indent=2)
+            print(f"Updated local state: {state_file}")
+
+    except Exception as e:
+        print(f"Error cancelling batch: {e}")
+    finally:
+        loop.close()
+        loop2 = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop2)
+        try:
+            loop2.run_until_complete(backend.aclose())
+        finally:
+            loop2.close()
+
+
+def cancel_all_batches(config: MinimaLlmConfig, prefix: str) -> None:
+    """Cancel all batches matching a prefix and delete local state files."""
+    states = _list_batch_states(config)
+    matching = [(sf, state) for sf, state in states if state.prefix.startswith(prefix)]
+
+    if not matching:
+        print(f"No batches found matching prefix: {prefix}")
+        return
+
+    print(f"Found {len(matching)} batch(es) matching prefix '{prefix}':")
+
+    for state_file, state in matching:
+        print(f"\n  Prefix: {state.prefix}")
+
+        # Cancel remote batch if active
+        if state.batch_id and state.status in ("validating", "in_progress", "finalizing"):
+            print(f"  Cancelling remote batch {state.batch_id}...")
+            try:
+                cancel_batch(state.batch_id, config)
+            except Exception as e:
+                print(f"  Warning: Could not cancel remote batch: {e}")
+
+        # Delete local state file
+        if state_file.exists():
+            state_file.unlink()
+            print(f"  Deleted state file: {state_file}")
+
+
+def cancel_all_local_batches(config: MinimaLlmConfig) -> None:
+    """Cancel ALL local batches and delete state files."""
+    states = _list_batch_states(config)
+
+    if not states:
+        print("No batch state files found.")
+        return
+
+    print(f"Found {len(states)} batch state file(s). Cancelling all...")
+
+    for state_file, state in states:
+        print(f"\n  Prefix: {state.prefix}")
+
+        # Cancel remote batch if active
+        if state.batch_id and state.status in ("validating", "in_progress", "finalizing"):
+            print(f"  Cancelling remote batch {state.batch_id}...")
+            try:
+                cancel_batch(state.batch_id, config)
+            except Exception as e:
+                print(f"  Warning: Could not cancel remote batch: {e}")
+
+        # Delete local state file
+        if state_file.exists():
+            state_file.unlink()
+            print(f"  Deleted state file: {state_file}")
+
+    print("\nAll local batch state files deleted.")

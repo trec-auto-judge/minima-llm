@@ -120,6 +120,81 @@ async def main():
 asyncio.run(main())
 ```
 
+## Batch Management
+
+For long-running batch jobs using the OpenAI batch API, minima-llm provides batch state management with local state files for resumption after interruption.
+
+### Configuration
+
+Enable Parasail batch mode in your config:
+
+```yaml
+parasail:
+  llm_batch_prefix: "my-project"  # Prefix for batch state files
+  state_dir: "./batch-state"      # Directory for state files (defaults to cache_dir)
+  poll_interval_s: 30             # How often to poll for completion
+  max_poll_hours: 24              # Maximum time to wait
+```
+
+### Batch Management Functions
+
+These functions are available for programmatic batch management:
+
+```python
+from minima_llm import (
+    batch_status_overview,
+    cancel_batch,
+    cancel_all_batches,
+    cancel_all_local_batches,
+    MinimaLlmConfig,
+)
+
+config = MinimaLlmConfig.from_yaml("config.yml")
+
+# Show status of all local batch state files
+batch_status_overview(config)
+
+# Cancel a specific batch by remote batch ID
+cancel_batch("batch_abc123", config)
+
+# Cancel all batches matching a prefix
+cancel_all_batches(config, prefix="my-project")
+
+# Cancel ALL local batches
+cancel_all_local_batches(config)
+```
+
+### Command Line Interface
+
+minima-llm provides a standalone CLI for batch management:
+
+```bash
+# Show status of all batches (uses CACHE_DIR from environment)
+minima-llm batch-status
+
+# With explicit config file
+minima-llm batch-status --config config.yml
+
+# Cancel batches matching a prefix
+minima-llm batch-status --cancel my-prefix
+
+# Cancel a specific remote batch by ID
+minima-llm batch-status --cancel-remote batch_abc123
+
+# Cancel ALL local batches
+minima-llm batch-status --cancel-all
+```
+
+When calling from a different directory, use absolute paths or set environment variables:
+
+```bash
+# Absolute path to config
+minima-llm batch-status --config /path/to/project/config.yml
+
+# Or set CACHE_DIR to find batch state files
+CACHE_DIR=/path/to/project/cache minima-llm batch-status
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -164,7 +239,8 @@ minima_llm/
 ├── protocol.py      # AsyncMinimaLlmBackend protocol, Request/Response types
 ├── config.py        # MinimaLlmConfig, BatchConfig, ParasailBatchConfig
 ├── backend.py       # OpenAIMinimaLlm - full async backend with cache
-├── batch.py         # run_batched_callable, Parasail batch support
+├── batch.py         # run_batched_callable, Parasail batch support, batch management
+├── cli.py           # Command-line interface (minima-llm command)
 └── dspy_adapter.py  # MinimaLlmDSPyLM, TolerantChatAdapter (optional)
 ```
 

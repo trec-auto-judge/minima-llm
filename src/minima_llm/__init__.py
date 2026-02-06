@@ -27,6 +27,12 @@ from .backend import (
     RpmGate,
     Cooldown,
 )
+from .batch import (
+    batch_status_overview,
+    cancel_batch,
+    cancel_all_batches,
+    cancel_all_local_batches,
+)
 
 __all__ = [
     # Config
@@ -56,6 +62,11 @@ __all__ = [
     "PromptCache",
     "RpmGate",
     "Cooldown",
+    # Batch management CLI
+    "batch_status_overview",
+    "cancel_batch",
+    "cancel_all_batches",
+    "cancel_all_local_batches",
 ]
 
 __version__ = "0.1.0"

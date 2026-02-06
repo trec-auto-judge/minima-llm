@@ -41,6 +41,9 @@ dev = [
     "ruff>=0.1.0",
 ]
 
+[project.scripts]
+minima-llm = "minima_llm.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/trec-auto-judge/minima-llm"
 Documentation = "https://github.com/trec-auto-judge/minima-llm#readme"
