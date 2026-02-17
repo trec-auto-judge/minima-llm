@@ -840,6 +840,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         if cfg.cache_dir:
             os.makedirs(cfg.cache_dir, exist_ok=True)
             self._cache_path = os.path.join(cfg.cache_dir, "minima_llm.db")
+            print(f"Prompt cache: {self._cache_path}")
 
         # Backend pulse - diagnostics that persist for lifetime of backend
         self._pulse = BackendPulse()
@@ -1041,8 +1042,20 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         # Check cache first (unless force_refresh)
         cache = self._ensure_cache()
         cache_key: Optional[str] = None
+        _trace_file = os.environ.get("MINIMA_TRACE_FILE")
         if cache is not None:
             cache_key = self._make_cache_key(req)
+            if _trace_file:
+                obj: Dict[str, Any] = {"model": self.cfg.model, "messages": req.messages}
+                if req.temperature is not None:
+                    obj["temperature"] = req.temperature
+                if req.max_tokens is not None:
+                    obj["max_tokens"] = req.max_tokens
+                if req.extra:
+                    obj["extra"] = req.extra
+                canonical = json.dumps(obj, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+                with open(_trace_file, "a") as _tf:
+                    _tf.write(json.dumps({"key": cache_key, "canonical": canonical}) + "\n")
             if not (force_refresh or self.cfg.force_refresh):
                 async with self._cache_lock:  # type: ignore[union-attr]
                     cached = cache.get(cache_key)
@@ -1071,6 +1084,14 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             payload["max_tokens"] = req.max_tokens
         if req.extra:
             payload.update(req.extra)
+
+        # Bust server-side caches on force_refresh by injecting a random seed.
+        # This is intentionally placed AFTER the cache key computation (above),
+        # so the seed does not affect the local cache key. The fresh response
+        # will be written back under the original cache key, replacing any
+        # stale entry.
+        if (force_refresh or self.cfg.force_refresh) and "seed" not in payload:
+            payload["seed"] = random.randint(0, 2**31 - 1)
 
         url = self._endpoint("/v1/chat/completions")
 

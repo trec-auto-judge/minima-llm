@@ -210,6 +210,8 @@ CACHE_DIR=/path/to/project/cache minima-llm batch-status
 | `RPM` | Requests per minute (0=unlimited) | 600 |
 | `TIMEOUT_S` | Per-request timeout | 60.0 |
 | `MAX_ATTEMPTS` | Max retry attempts (0=infinite) | 6 |
+| `CACHE_FORCE_REFRESH` | Skip cache reads, still write | 0 (disabled) |
+| `MINIMA_TRACE_FILE` | Cache key debug log (JSONL) | None (disabled) |
 
 ### YAML Configuration
 
@@ -231,6 +233,40 @@ Load with:
 ```python
 config = MinimaLlmConfig.from_yaml("config.yml")
 ```
+
+## Prompt Caching
+
+minima-llm includes an SQLite-backed prompt cache that stores LLM responses keyed by a SHA-256 hash of the request parameters (model, messages, temperature, max_tokens, extras). The database uses WAL mode for multi-process safety.
+
+### Enable / Disable
+
+- **Enable**: Set `cache_dir` to a directory path via environment variable, YAML, or code. The cache database is created at `{cache_dir}/minima_llm.db`.
+- **Disable**: Leave `cache_dir` unset (default). No cache files are created.
+
+```yaml
+cache_dir: "./my-cache"
+```
+
+### Force Refresh
+
+Force refresh bypasses cache *reads* but still *writes* new responses to the cache, useful for regenerating stale entries.
+
+- **Config-wide**: Set `CACHE_FORCE_REFRESH=1` env var, or `force_refresh: true` in YAML.
+- **Per-request**: Pass `force_refresh=True` to `generate()`:
+
+```python
+result = await backend.generate(request, force_refresh=True)
+```
+
+### Debug Tracing
+
+To diagnose cache misses, set `MINIMA_TRACE_FILE` to a file path. Every cache key computation is logged as a JSONL line containing the canonical JSON used for hashing and the resulting SHA-256 key:
+
+```bash
+MINIMA_TRACE_FILE=trace.jsonl python my_script.py
+```
+
+Each line has the form `{"key": "<sha256>", "canonical": "<json>"}`. Compare canonical JSON between runs to spot differences causing cache misses.
 
 ## Architecture
 
