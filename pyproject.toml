@@ -44,6 +44,7 @@ dev = [
 
 [project.scripts]
 minima-llm = "minima_llm.cli:main"
+minimallm-proxy = "minima_llm.cli:proxy_main"
 
 [project.urls]
 Homepage = "https://github.com/trec-auto-judge/minima-llm"

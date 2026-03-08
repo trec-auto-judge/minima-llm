@@ -985,7 +985,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
 
     def _make_cache_key(self, req: MinimaLlmRequest) -> str:
         """Generate cache key from request parameters."""
-        obj: Dict[str, Any] = {"model": self.cfg.model, "messages": req.messages}
+        obj: Dict[str, Any] = {"model": req.model or self.cfg.model, "messages": req.messages}
         if req.temperature is not None:
             obj["temperature"] = req.temperature
         if req.max_tokens is not None:
@@ -1046,7 +1046,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         if cache is not None:
             cache_key = self._make_cache_key(req)
             if _trace_file:
-                obj: Dict[str, Any] = {"model": self.cfg.model, "messages": req.messages}
+                obj: Dict[str, Any] = {"model": req.model or self.cfg.model, "messages": req.messages}
                 if req.temperature is not None:
                     obj["temperature"] = req.temperature
                 if req.max_tokens is not None:
@@ -1075,7 +1075,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             )
 
         payload: Json = {
-            "model": self.cfg.model,
+            "model": req.model or self.cfg.model,
             "messages": req.messages,
         }
         if req.temperature is not None:

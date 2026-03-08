@@ -1,9 +1,10 @@
 """
 Command-line interface for minima-llm.
 
-Provides batch management commands for Parasail batch jobs.
+Provides batch management commands for Parasail batch jobs and a proxy server.
 """
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from .batch import (
 def main():
     parser = argparse.ArgumentParser(
         prog="minima-llm",
-        description="Minima LLM - batch management CLI",
+        description="Minima LLM - batch management and proxy CLI",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -49,6 +50,33 @@ def main():
         help="Cancel ALL local batches",
     )
 
+    # proxy command
+    proxy_parser = subparsers.add_parser(
+        "minimallm-proxy",
+        help="Start OpenAI-compatible proxy server with caching and rate limiting",
+    )
+    proxy_parser.add_argument(
+        "--config", "-c",
+        type=Path,
+        help="Path to config YAML file (default: use environment variables)",
+    )
+    proxy_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    proxy_parser.add_argument(
+        "--port",
+        type=int,
+        default=8990,
+        help="Listen port (default: 8990)",
+    )
+    proxy_parser.add_argument(
+        "--force-model",
+        action="store_true",
+        help="Override client model with configured OPENAI_MODEL",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -71,6 +99,30 @@ def main():
             cancel_all_local_batches(config)
         else:
             batch_status_overview(config)
+
+    elif args.command == "minimallm-proxy":
+        if args.config:
+            config = MinimaLlmConfig.from_yaml(args.config)
+        else:
+            config = MinimaLlmConfig.from_env()
+
+        from .proxy import ProxyServer
+        server = ProxyServer(
+            config,
+            host=args.host,
+            port=args.port,
+            force_model=args.force_model,
+        )
+        try:
+            asyncio.run(server.run())
+        except KeyboardInterrupt:
+            print("\nProxy stopped.")
+
+
+def proxy_main():
+    """Entry point for the standalone minimallm-proxy command."""
+    sys.argv = ["minima-llm", "minimallm-proxy"] + sys.argv[1:]
+    main()
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ class MinimaLlmRequest:
 
     request_id: str
     messages: List[Dict[str, Any]]
+    model: Optional[str] = None          # overrides config model when set
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     extra: Optional[Json] = None

@@ -33,6 +33,7 @@ from .batch import (
     cancel_all_batches,
     cancel_all_local_batches,
 )
+from .proxy import ProxyServer
 
 __all__ = [
     # Config
@@ -67,6 +68,8 @@ __all__ = [
     "cancel_batch",
     "cancel_all_batches",
     "cancel_all_local_batches",
+    # Proxy server
+    "ProxyServer",
 ]
 
 __version__ = "0.1.0"
