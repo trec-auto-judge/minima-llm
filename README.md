@@ -11,6 +11,7 @@ Minimal async LLM backend with caching and batch execution.
 - **Retry Logic**: Exponential backoff with jitter, cooldown after overload
 - **OpenAI Compatible**: Works with any OpenAI-compatible endpoint
 - **DSPy Integration**: Optional adapter for DSPy framework (requires `[dspy]` extra)
+- **Proxy Mode**: OpenAI-compatible HTTP proxy server so any application (DSPy, LangChain, curl) gets caching and rate limiting
 
 ## Installation
 
@@ -119,6 +120,57 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Proxy Mode
+
+`minimallm-proxy` starts a localhost HTTP server with an OpenAI-compatible API. Any application that speaks the OpenAI protocol can point to it and automatically benefit from minima-llm's prompt caching, rate limiting, backpressure, and retry logic.
+
+### Start the proxy
+
+```bash
+# Using environment variables (OPENAI_BASE_URL, OPENAI_MODEL, CACHE_DIR, etc.)
+minimallm-proxy --port 8990
+
+# With a YAML config file
+minimallm-proxy --port 8990 --config config.yml
+
+# Force all requests to use the configured OPENAI_MODEL (ignore client's model field)
+minimallm-proxy --port 8990 --force-model
+```
+
+### Send requests
+
+Point any OpenAI-compatible client to `http://localhost:8990/v1`:
+
+```bash
+curl -X POST http://localhost:8990/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+```python
+# With litellm / DSPy
+import os
+os.environ["OPENAI_API_BASE"] = "http://localhost:8990/v1"
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8990` | Listen port |
+| `--config` / `-c` | env vars | YAML config file |
+| `--force-model` | off | Ignore client model, use `OPENAI_MODEL` |
+
+### Supported endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat completions (non-streaming only) |
+| `/v1/models` | GET | List the configured model |
+
+Streaming (`"stream": true`) is not supported and returns HTTP 400.
 
 ## Batch Management
 
@@ -276,7 +328,8 @@ minima_llm/
 ├── config.py        # MinimaLlmConfig, BatchConfig, ParasailBatchConfig
 ├── backend.py       # OpenAIMinimaLlm - full async backend with cache
 ├── batch.py         # run_batched_callable, Parasail batch support, batch management
-├── cli.py           # Command-line interface (minima-llm command)
+├── proxy.py         # OpenAI-compatible HTTP proxy server (minimallm-proxy)
+├── cli.py           # Command-line interface (minima-llm, minimallm-proxy)
 └── dspy_adapter.py  # MinimaLlmDSPyLM, TolerantChatAdapter (optional)
 ```
 
