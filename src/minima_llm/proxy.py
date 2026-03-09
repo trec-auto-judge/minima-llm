@@ -108,8 +108,14 @@ class ProxyServer:
         temperature = data.get("temperature")
         max_tokens = data.get("max_tokens")
 
+        # Cache control: {"cache": {"no-cache": true}} skips cache (litellm convention)
+        force_refresh = False
+        cache_ctrl = data.get("cache")
+        if isinstance(cache_ctrl, dict) and cache_ctrl.get("no-cache", False):
+            force_refresh = True
+
         # Collect extra parameters (beyond the ones we handle explicitly)
-        known_keys = {"model", "messages", "temperature", "max_tokens", "stream"}
+        known_keys = {"model", "messages", "temperature", "max_tokens", "stream", "cache"}
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
         request_id = str(uuid.uuid4())
@@ -122,7 +128,7 @@ class ProxyServer:
             extra=extra or None,
         )
 
-        result = await self.backend.generate(req)
+        result = await self.backend.generate(req, force_refresh=force_refresh)
 
         if isinstance(result, MinimaLlmResponse):
             if result.cached:
