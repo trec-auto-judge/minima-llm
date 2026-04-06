@@ -70,6 +70,8 @@ from .backend import (
     reset_force_refresh,
     set_force_refresh,
     set_last_cached,
+    set_retry_seed,
+    reset_retry_seed,
 )
 from .config import MinimaLlmConfig
 
@@ -651,9 +653,11 @@ async def run_dspy_batch(
 
             while parse_retry_limit <= 0 or attempt < parse_retry_limit:
                 force_refresh_token: Optional[contextvars.Token[bool]] = None
+                retry_seed_token: Optional[contextvars.Token[int]] = None
                 try:
                     if attempt > 0:
                         force_refresh_token = set_force_refresh(True)
+                        retry_seed_token = set_retry_seed(attempt)
 
                     result = await invoke_predictor(predictor, **kw)
                     output_converter(result, obj)
@@ -668,6 +672,8 @@ async def run_dspy_batch(
                 finally:
                     if force_refresh_token is not None:
                         reset_force_refresh(force_refresh_token)
+                    if retry_seed_token is not None:
+                        reset_retry_seed(retry_seed_token)
                 attempt += 1
 
             if last_error is None:

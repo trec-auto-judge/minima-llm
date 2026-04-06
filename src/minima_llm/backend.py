@@ -263,6 +263,22 @@ def get_force_refresh() -> bool:
     return _force_refresh_ctx.get()
 
 
+# Retry seed context - allows retry loops to pass attempt number to generate()
+_retry_seed_ctx: contextvars.ContextVar[int] = contextvars.ContextVar('retry_seed', default=0)
+
+def set_retry_seed(seed: int) -> contextvars.Token[int]:
+    """Set retry seed for current task. Called by retry loops to pass attempt number."""
+    return _retry_seed_ctx.set(seed)
+
+def reset_retry_seed(token: contextvars.Token[int]) -> None:
+    """Reset retry seed after call completes."""
+    _retry_seed_ctx.reset(token)
+
+def get_retry_seed() -> int:
+    """Get retry seed for current task."""
+    return _retry_seed_ctx.get()
+
+
 T = TypeVar("T")
 R = TypeVar("R")
 
@@ -1088,13 +1104,19 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         if req.extra:
             payload.update(req.extra)
 
-        # Bust server-side caches on force_refresh by injecting a random seed.
-        # This is intentionally placed AFTER the cache key computation (above),
-        # so the seed does not affect the local cache key. The fresh response
-        # will be written back under the original cache key, replacing any
-        # stale entry.
-        if (force_refresh or self.cfg.force_refresh) and "seed" not in payload:
-            payload["seed"] = random.randint(0, 2**31 - 1)
+        # Bust server-side caches on force_refresh by injecting a deterministic seed.
+        # Uses retry_seed from context (set by retry loops), or increments existing seed
+        # from request. This allows proxy caches to hit on matching seeds while ensuring
+        # each retry attempt gets a distinct seed.
+        if force_refresh or self.cfg.force_refresh:
+            ctx_seed = get_retry_seed()
+            if ctx_seed > 0:
+                # Retry loop set the seed via context
+                payload["seed"] = ctx_seed
+            else:
+                # Increment any existing seed from request (e.g., from proxy passthrough)
+                current_seed = payload.get("seed", 0)
+                payload["seed"] = current_seed + 1
 
         url = self._endpoint("/v1/chat/completions")
 

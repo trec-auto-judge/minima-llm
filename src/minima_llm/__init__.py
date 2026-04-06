@@ -21,6 +21,9 @@ from .backend import (
     set_force_refresh,
     get_force_refresh,
     reset_force_refresh,
+    set_retry_seed,
+    get_retry_seed,
+    reset_retry_seed,
     BackendPulse,
     BackendStats,  # Backwards compatibility alias
     PromptCache,
@@ -59,6 +62,9 @@ __all__ = [
     "set_force_refresh",
     "get_force_refresh",
     "reset_force_refresh",
+    "set_retry_seed",
+    "get_retry_seed",
+    "reset_retry_seed",
     # Internal (for advanced use)
     "PromptCache",
     "RpmGate",
