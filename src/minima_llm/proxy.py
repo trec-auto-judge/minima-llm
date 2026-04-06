@@ -60,28 +60,28 @@ class ProxyServer:
     ) -> None:
         """Handle a single HTTP connection."""
         try:
-            method, path, headers, body = await self._read_http_request(reader)
-        except Exception:
+            try:
+                method, path, headers, body = await self._read_http_request(reader)
+            except Exception:
+                return  # Can't read request, just close
+
+            try:
+                if method == "POST" and path.rstrip("/") == "/v1/chat/completions":
+                    status, resp_body = await self._handle_chat_completions(body)
+                elif method == "GET" and path.rstrip("/") == "/v1/models":
+                    status, resp_body = self._handle_models()
+                else:
+                    status = 404
+                    resp_body = json.dumps({"error": {"message": f"Not found: {method} {path}", "type": "not_found"}})
+            except Exception as e:
+                status = 500
+                resp_body = json.dumps({"error": {"message": str(e), "type": "internal_error"}})
+
+            self._write_http_response(writer, status, resp_body)
+            await writer.drain()
+        finally:
             writer.close()
             await writer.wait_closed()
-            return
-
-        try:
-            if method == "POST" and path.rstrip("/") == "/v1/chat/completions":
-                status, resp_body = await self._handle_chat_completions(body)
-            elif method == "GET" and path.rstrip("/") == "/v1/models":
-                status, resp_body = self._handle_models()
-            else:
-                status = 404
-                resp_body = json.dumps({"error": {"message": f"Not found: {method} {path}", "type": "not_found"}})
-        except Exception as e:
-            status = 500
-            resp_body = json.dumps({"error": {"message": str(e), "type": "internal_error"}})
-
-        self._write_http_response(writer, status, resp_body)
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
 
     async def _handle_chat_completions(self, body: bytes) -> Tuple[int, str]:
         """Handle POST /v1/chat/completions."""

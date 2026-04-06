@@ -622,8 +622,8 @@ async def run_dspy_batch(
 
     CODE_ERRORS = (NameError, TypeError, AttributeError, SyntaxError, ImportError)
 
-    http_max_attempts = backend.cfg.max_attempts
-    parse_retry_limit = 3 if http_max_attempts == 0 else http_max_attempts
+    # 0 means unlimited retries
+    parse_retry_limit = backend.cfg.max_attempts
 
     with dspy.context(lm=lm, adapter=_select_adapter()):
         predictor = predictor_class(signature_class)
@@ -647,8 +647,9 @@ async def run_dspy_batch(
         async def process_one(obj: "BaseModel") -> "BaseModel":
             kw = obj.model_dump(include=set(input_fields))
             last_error: Optional[Exception] = None
+            attempt = 0
 
-            for attempt in range(parse_retry_limit):
+            while parse_retry_limit <= 0 or attempt < parse_retry_limit:
                 force_refresh_token: Optional[contextvars.Token[bool]] = None
                 try:
                     if attempt > 0:
@@ -662,15 +663,16 @@ async def run_dspy_batch(
                     raise
                 except AdapterParseError as e:
                     last_error = e
-                    continue
                 except Exception as e:
                     last_error = e
-                    continue
                 finally:
                     if force_refresh_token is not None:
                         reset_force_refresh(force_refresh_token)
+                attempt += 1
 
-            raise last_error  # type: ignore[misc]
+            if last_error is None:
+                raise RuntimeError(f"DSPy prediction failed after {attempt} attempts with no captured error")
+            raise last_error
 
         results = await backend.run_batched_callable(annotation_objs, process_one)
 

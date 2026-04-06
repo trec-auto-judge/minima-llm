@@ -283,9 +283,8 @@ class TestCooldownOnOverload:
 class TestDspyAdapterInfiniteRetries:
     """Test DSPy adapter behavior with max_attempts=0.
 
-    When max_attempts=0 (infinite HTTP retries), the DSPy adapter's
-    parse_retry_limit should be set to a reasonable default (3),
-    not 0 (which would cause range(0) = empty loop).
+    When max_attempts<=0, both HTTP retries and
+    parse retries continue indefinitely until success or a non-retriable error.
     """
 
     @pytest.mark.skipif(
@@ -293,7 +292,7 @@ class TestDspyAdapterInfiniteRetries:
         reason="Skipping LLM endpoint tests (SKIP_LLM_ENDPOINT_TESTS set)"
     )
     def test_parse_retry_limit_with_max_attempts_zero(self, base_config):
-        """With max_attempts=0, parse_retry_limit should be 3, not 0."""
+        """With max_attempts=0, parse retries continue until success."""
         dspy = pytest.importorskip("dspy")
         from pydantic import BaseModel
         from typing import Optional
@@ -345,7 +344,7 @@ class TestDspyAdapterInfiniteRetries:
         reason="Skipping LLM endpoint tests (SKIP_LLM_ENDPOINT_TESTS set)"
     )
     def test_parse_errors_retry_with_max_attempts_zero(self, base_config):
-        """Parse errors should still retry (up to 3 times) with max_attempts=0."""
+        """With max_attempts=0, parse errors retry indefinitely until success."""
         dspy = pytest.importorskip("dspy")
         from pydantic import BaseModel
         from typing import Optional
@@ -390,8 +389,8 @@ class TestDspyAdapterInfiniteRetries:
 
         results = asyncio.run(run_test())
 
-        # Should have retried parse errors and eventually succeeded
-        assert call_count == 3, "Should retry parse errors up to 3 times"
+        # Should have retried parse errors and eventually succeeded (mock returns valid on 3rd try)
+        assert call_count == 3, "Should retry parse errors until success"
         assert results[0].output_text == "success"
 
     @pytest.mark.skipif(

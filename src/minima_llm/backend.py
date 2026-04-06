@@ -1015,9 +1015,12 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
                     headers = {k.lower(): v for k, v in resp.headers.items()}
                     return int(resp.status), headers, resp.read()
             except urllib.error.HTTPError as e:
-                headers = {k.lower(): v for k, v in e.headers.items()} if e.headers else {}
-                data = e.read() if e.fp is not None else b""
-                return int(e.code), headers, data
+                try:
+                    headers = {k.lower(): v for k, v in e.headers.items()} if e.headers else {}
+                    data = e.read() if e.fp is not None else b""
+                    return int(e.code), headers, data
+                finally:
+                    e.close()
             except urllib.error.URLError as e:
                 return 408, {}, f"URLError: {e.reason}".encode()
 
