@@ -609,3 +609,120 @@ class TestDspyEndToEnd:
         assert len(non_none_seeds) >= 2, f"Expected at least 2 retries with seeds, got {non_none_seeds}"
         assert 1 in non_none_seeds, f"Expected seed=1 in retries, got {non_none_seeds}"
         assert 2 in non_none_seeds, f"Expected seed=2 in retries, got {non_none_seeds}"
+
+    def test_converter_valueerror_via_proxy_with_seeds(self, base_config, dspy_available):
+        """Test that converter ValueError triggers retries with seeds through the proxy.
+
+        Full end-to-end: DSPy -> Proxy -> mocked upstream
+        Verifies incrementing seeds flow correctly through the proxy layer.
+        """
+        import socket
+        import dspy
+        from pydantic import BaseModel
+        from typing import Optional
+        from minima_llm.proxy import ProxyServer
+        from minima_llm.dspy_adapter import run_dspy_batch_generic
+
+        class GradeSignature(dspy.Signature):
+            """Grade the answer on a scale of 0-5."""
+            question: str = dspy.InputField(desc="The question")
+            passage: str = dspy.InputField(desc="The passage to grade")
+            grade: int = dspy.OutputField(desc="Grade from 0-5")
+
+        class GradeData(BaseModel):
+            question: str
+            passage: str
+            grade: int = 0
+            reasoning: Optional[str] = None
+
+        def convert_output(prediction: dspy.Prediction, data: GradeData) -> None:
+            grade_val = int(prediction.grade)
+            if not (0 <= grade_val <= 5):
+                raise ValueError(f"Grade {grade_val} out of range 0-5")
+            data.grade = grade_val
+            data.reasoning = getattr(prediction, 'reasoning', None)
+
+        # Find a free port for the proxy
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('127.0.0.1', 0))
+            proxy_port = s.getsockname()[1]
+
+        # Proxy config (upstream backend)
+        proxy_backend_config = replace(base_config, max_attempts=5)
+        proxy = ProxyServer(proxy_backend_config, host="127.0.0.1", port=proxy_port)
+
+        # Client config points to proxy
+        client_config = replace(
+            base_config,
+            base_url=f"http://127.0.0.1:{proxy_port}",
+            max_attempts=5,
+        )
+
+        seeds_at_upstream: List[Any] = []
+        call_count = 0
+
+        async def mock_upstream(url, payload):
+            nonlocal call_count
+            call_count += 1
+            seeds_at_upstream.append(payload.get("seed"))
+
+            # First few calls: valid int but out of range
+            if call_count <= 4:
+                invalid_content = (
+                    "[[ ## reasoning ## ]]\n"
+                    "Excellent work\n\n"
+                    "[[ ## grade ## ]]\n"
+                    "6\n\n"
+                    "[[ ## completed ## ]]"
+                )
+                response = {"choices": [{"message": {"content": invalid_content}}]}
+                return (200, {}, json.dumps(response).encode())
+
+            # After retries: valid response
+            valid_content = (
+                "[[ ## reasoning ## ]]\n"
+                "Good answer\n\n"
+                "[[ ## grade ## ]]\n"
+                "4\n\n"
+                "[[ ## completed ## ]]"
+            )
+            response = {"choices": [{"message": {"content": valid_content}}]}
+            return (200, {}, json.dumps(response).encode())
+
+        test_data = [GradeData(question="What is 2+2?", passage="The answer is 4.")]
+
+        async def run_test():
+            # Patch the proxy's backend to capture what reaches upstream
+            with patch.object(proxy.backend, '_post_json', side_effect=mock_upstream):
+                server = await asyncio.start_server(
+                    proxy._handle_connection,
+                    host="127.0.0.1",
+                    port=proxy_port,
+                )
+
+                async with server:
+                    # Run DSPy batch through the proxy
+                    # Need to run in executor since run_dspy_batch_generic is sync
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(
+                        None,
+                        lambda: run_dspy_batch_generic(
+                            test_data,
+                            GradeSignature,
+                            convert_output,
+                            client_config,
+                        )
+                    )
+                    return results
+
+        results = asyncio.run(run_test())
+
+        assert results[0].grade == 4
+
+        # Verify seeds reached upstream with incrementing values
+        assert seeds_at_upstream[0] is None, f"First call should have no seed, got {seeds_at_upstream[0]}"
+
+        non_none_seeds = [s for s in seeds_at_upstream if s is not None]
+        assert len(non_none_seeds) >= 2, f"Expected at least 2 retries with seeds via proxy, got {non_none_seeds}"
+        assert 1 in non_none_seeds, f"Expected seed=1 via proxy, got {non_none_seeds}"
+        assert 2 in non_none_seeds, f"Expected seed=2 via proxy, got {non_none_seeds}"
