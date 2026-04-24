@@ -286,6 +286,46 @@ class TestTolerantAdapterParse:
         result = adapter.parse(signature_with_optional_list_str, completion)
         assert result["questions"] == ["Question 1", "Question 2"]
 
+    def test_optional_list_str_null_returns_none(self, adapter, signature_with_optional_list_str):
+        """Optional[List[str]] with 'null' value should coerce to None, not raise."""
+        completion = dedent("""
+            [[ ## questions ## ]]
+            null
+        """)
+        result = adapter.parse(signature_with_optional_list_str, completion)
+        assert result["questions"] is None
+
+    def test_optional_list_str_none_returns_none(self, adapter, signature_with_optional_list_str):
+        """Optional[List[str]] with 'None' value (Python-style) should coerce to None."""
+        completion = dedent("""
+            [[ ## questions ## ]]
+            None
+        """)
+        result = adapter.parse(signature_with_optional_list_str, completion)
+        assert result["questions"] is None
+
+    def test_optional_list_str_empty_string_returns_none(self, adapter, signature_with_optional_list_str):
+        """Optional[List[str]] with empty value should coerce to None."""
+        completion = dedent("""
+            [[ ## questions ## ]]
+
+            [[ ## other ## ]]
+            filler
+        """)
+        result = adapter.parse(signature_with_optional_list_str, completion)
+        assert result["questions"] is None
+
+    def test_optional_float_null_returns_none(self, adapter, signature_with_optional_confidence):
+        """Optional[float] with 'null' value should coerce to None, not raise on float('null')."""
+        completion = dedent("""
+            [[ ## answer ## ]]
+            42
+            [[ ## confidence ## ]]
+            null
+        """)
+        result = adapter.parse(signature_with_optional_confidence, completion)
+        assert result["confidence"] is None
+
 
 class TestStockVsTolerantAdapter:
     """Compare DSPy 3.1 stock ChatAdapter vs TolerantChatAdapter."""

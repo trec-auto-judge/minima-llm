@@ -242,6 +242,10 @@ class TolerantChatAdapter(ChatAdapter):
 
     def _coerce_field(self, val: str, annotation: type) -> typing.Any:
         """Coerce string value to annotation type."""
+        # An Optional field accepts "null"/"none"/"" as None rather than trying to
+        # coerce to the inner type (e.g. list[str] rejecting "null" as non-list).
+        if self.is_optional_type(annotation) and isinstance(val, str) and self._is_non_value(val):
+            return None
         if self.is_float(annotation):
             return float(self.try_parse_numeric(val, float, self._FLOAT_PATTERN))
         if self.is_int(annotation):
@@ -674,8 +678,15 @@ async def run_dspy_batch(
                     raise
                 except AdapterParseError as e:
                     last_error = e
+                    if attempt >= 3:
+                        print(f"[retry attempt={attempt}] AdapterParseError: {e}")
+                        parsed = getattr(e, "parsed_result", None)
+                        if parsed:
+                            print(f"  parsed_so_far: {parsed}")
                 except Exception as e:
                     last_error = e
+                    if attempt >= 3:
+                        print(f"[retry attempt={attempt}] {type(e).__name__}: {e}")
                 finally:
                     if force_refresh_token is not None:
                         reset_force_refresh(force_refresh_token)
