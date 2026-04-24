@@ -77,11 +77,17 @@ class ProxyServer:
                 status = 500
                 resp_body = json.dumps({"error": {"message": str(e), "type": "internal_error"}})
 
-            self._write_http_response(writer, status, resp_body)
-            await writer.drain()
+            try:
+                self._write_http_response(writer, status, resp_body)
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError):
+                pass  # Client disconnected mid-write
         finally:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError):
+                pass  # Connection already torn down by peer
 
     async def _handle_chat_completions(self, body: bytes) -> Tuple[int, str]:
         """Handle POST /v1/chat/completions."""
