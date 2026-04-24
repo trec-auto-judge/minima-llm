@@ -24,6 +24,8 @@ from .backend import (
     set_retry_seed,
     get_retry_seed,
     reset_retry_seed,
+    set_debug_trace,
+    reset_debug_trace,
     BackendPulse,
     BackendStats,  # Backwards compatibility alias
     PromptCache,
@@ -65,6 +67,8 @@ __all__ = [
     "set_retry_seed",
     "get_retry_seed",
     "reset_retry_seed",
+    "set_debug_trace",
+    "reset_debug_trace",
     # Internal (for advanced use)
     "PromptCache",
     "RpmGate",

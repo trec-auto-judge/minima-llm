@@ -279,6 +279,21 @@ def get_retry_seed() -> int:
     return _retry_seed_ctx.get()
 
 
+# Debug-trace context - allows retry loops to enable MINIMA_DEBUG-style tracing
+# for their own task without mutating the global env var.
+_debug_trace_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar('minima_debug_trace', default=False)
+
+def set_debug_trace(enabled: bool) -> contextvars.Token[bool]:
+    """Force-enable MINIMA_DEBUG-style tracing for the current async task."""
+    return _debug_trace_ctx.set(enabled)
+
+def reset_debug_trace(token: contextvars.Token[bool]) -> None:
+    _debug_trace_ctx.reset(token)
+
+def _trace_enabled() -> bool:
+    return bool(os.environ.get("MINIMA_DEBUG")) or _debug_trace_ctx.get()
+
+
 T = TypeVar("T")
 R = TypeVar("R")
 
@@ -1109,6 +1124,9 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         # from request. This allows proxy caches to hit on matching seeds while ensuring
         # each retry attempt gets a distinct seed.
         if force_refresh or self.cfg.force_refresh:
+            # litellm-convention cache pragma honored by the minima-llm proxy
+            # (proxy.py: cache_ctrl.get("no-cache")) and any litellm proxy upstream.
+            # payload["cache"] = {"no-cache": True}
             ctx_seed = get_retry_seed()
             if ctx_seed > 0:
                 # Retry loop set the seed via context
@@ -1139,7 +1157,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             body_text = raw.decode("utf-8", errors="replace")
             last_body = body_text[:300]
 
-            if os.environ.get("MINIMA_DEBUG"):
+            if _trace_enabled():
                 print(f"TRACE generate:\n - payload: {payload}\n - response: {body_text}")
 
             if 200 <= status < 300:
@@ -1211,7 +1229,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
                 await self._cooldown.bump(cooldown_s)
                 this_request_saw_overload = True
                 if self._overload_warned < 0:
-                    if os.environ.get("MINIMA_DEBUG"):
+                    if _trace_enabled():
                         print(f"DEBUG 429 headers: {headers}")
                         print(f"DEBUG 429 body: {body_text[:500]}")
                     info_str = rate_info.summary()

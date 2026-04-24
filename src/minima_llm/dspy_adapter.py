@@ -72,6 +72,8 @@ from .backend import (
     set_last_cached,
     set_retry_seed,
     reset_retry_seed,
+    set_debug_trace,
+    reset_debug_trace,
 )
 from .config import MinimaLlmConfig
 
@@ -654,10 +656,15 @@ async def run_dspy_batch(
             while parse_retry_limit <= 0 or attempt < parse_retry_limit:
                 force_refresh_token: Optional[contextvars.Token[bool]] = None
                 retry_seed_token: Optional[contextvars.Token[int]] = None
+                debug_token: Optional[contextvars.Token[bool]] = None
                 try:
                     if attempt > 0:
                         force_refresh_token = set_force_refresh(True)
                         retry_seed_token = set_retry_seed(attempt)
+                    # After 3 failed attempts on the same prompt, enable MINIMA_DEBUG-style
+                    # tracing for this task so subsequent payloads/responses are logged.
+                    if attempt >= 3:
+                        debug_token = set_debug_trace(True)
 
                     result = await invoke_predictor(predictor, **kw)
                     output_converter(result, obj)
@@ -674,6 +681,8 @@ async def run_dspy_batch(
                         reset_force_refresh(force_refresh_token)
                     if retry_seed_token is not None:
                         reset_retry_seed(retry_seed_token)
+                    if debug_token is not None:
+                        reset_debug_trace(debug_token)
                 attempt += 1
 
             if last_error is None:
