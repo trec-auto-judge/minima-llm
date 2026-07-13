@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "minima-llm"
-version = "0.2.4"
+version = "0.2.5"
 description = "Minimal async LLM backend with caching and batch execution"
 readme = "README.md"
 license = "MIT"
@@ -26,8 +26,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Core has NO dependencies - stdlib only
-dependencies = []
+# One dependency only: certifi. stdlib urllib verifies TLS against the system CA store,
+# which is missing/misconfigured in many environments (nix-shell, slim containers, some
+# python builds) — causing silent HTTPS failures. certifi ships a portable CA bundle
+# (pure data, no transitive deps), the same fix requests/httpx/pip use.
+dependencies = ["certifi"]
 
 [project.optional-dependencies]
 dspy = ["dspy-ai>=2.0"]

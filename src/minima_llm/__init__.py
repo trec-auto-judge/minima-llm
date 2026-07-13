@@ -81,5 +81,3 @@ __all__ = [
     # Proxy server
     "ProxyServer",
 ]
-
-__version__ = "0.1.0"

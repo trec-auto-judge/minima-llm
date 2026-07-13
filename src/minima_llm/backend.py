@@ -9,6 +9,7 @@ import json
 import os
 import random
 import sqlite3
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +21,16 @@ import contextvars
 from contextlib import asynccontextmanager
 
 from .config import BatchConfig, MinimaLlmConfig
+
+# Verify TLS against certifi's CA bundle instead of the (often unconfigured) system CA
+# store, so HTTPS endpoints work in nix-shells, slim containers, and similar environments
+# — the same choice requests/httpx/pip make. certifi is imported optionally to preserve the
+# zero-dependency default: if it is absent, fall back to the system store (context=None).
+try:
+    import certifi
+    _SSL_CONTEXT: Optional[ssl.SSLContext] = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    _SSL_CONTEXT = None
 from .protocol import AsyncMinimaLlmBackend, BatchPendingResponse, Json, MinimaLlmFailure, MinimaLlmRequest, MinimaLlmResponse, MinimaLlmResult
 
 if TYPE_CHECKING:
@@ -1042,7 +1053,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
 
         def _do() -> Tuple[int, Dict[str, str], bytes]:
             try:
-                with urllib.request.urlopen(req, timeout=self.cfg.timeout_s) as resp:
+                with urllib.request.urlopen(req, timeout=self.cfg.timeout_s, context=_SSL_CONTEXT) as resp:
                     headers = {k.lower(): v for k, v in resp.headers.items()}
                     return int(resp.status), headers, resp.read()
             except urllib.error.HTTPError as e:
@@ -1232,10 +1243,21 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
                     if _trace_enabled():
                         print(f"DEBUG 429 headers: {headers}")
                         print(f"DEBUG 429 body: {body_text[:500]}")
-                    info_str = rate_info.summary()
-                    print(f"Server overload (HTTP {status}). {info_str}")
-                    rpm_str = f" Adjusted RPM to {new_rpm:.0f}." if new_rpm else ""
-                    print(f"  Retrying with cooldown={cooldown_s:.1f}s.{rpm_str} Press Ctrl-C to abort.")
+                    if status == 408 and body_text.lstrip().startswith("URLError:"):
+                        # Synthetic 408 from a client-side network failure (see the URLError
+                        # handler in _do). Name it honestly: it is not server overload, and
+                        # cooldown/RPM tuning cannot fix a connection/TLS/DNS problem.
+                        reason = body_text.strip()
+                        if reason.startswith("URLError:"):
+                            reason = reason[len("URLError:"):].strip()
+                        print(f"Cannot connect to the LLM endpoint — {reason[:300]}")
+                        print("  Connection error (not server overload). Retrying, but if it persists "
+                              "check the endpoint URL, network/proxy, and TLS certificates. Press Ctrl-C to abort.")
+                    else:
+                        info_str = rate_info.summary()
+                        print(f"Server overload (HTTP {status}). {info_str}")
+                        rpm_str = f" Adjusted RPM to {new_rpm:.0f}." if new_rpm else ""
+                        print(f"  Retrying with cooldown={cooldown_s:.1f}s.{rpm_str} Press Ctrl-C to abort.")
                     self._overload_warned = 0
                 self._overload_warned += 1
 
