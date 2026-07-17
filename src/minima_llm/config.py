@@ -278,6 +278,15 @@ class MinimaLlmConfig:
     cache_dir: Optional[str] = None  # None = disabled
     force_refresh: bool = False  # If True, bypass cache lookup (still writes to cache)
 
+    # Retry re-sampling: when a forced-refresh regeneration runs with an
+    # unset/zero temperature (greedy decoding), re-sample with a deterministic
+    # saturating temperature ramp so retries can escape deterministic failures
+    # (e.g. output-cap truncation): temp(n) = max * n / (n + halflife).
+    # Strictly increasing per attempt (distinct cache keys), converges to but
+    # never reaches retry_temperature_max. Set max to 0 to disable.
+    retry_temperature_max: float = 0.5
+    retry_temperature_halflife: float = 5.0
+
     # ----------------------------
     # Config modification
     # ----------------------------
@@ -381,6 +390,8 @@ class MinimaLlmConfig:
             # cache
             cache_dir=_env_str("CACHE_DIR"),
             force_refresh=(_env_int("CACHE_FORCE_REFRESH", 0) != 0),
+            retry_temperature_max=_env_float("RETRY_TEMPERATURE_MAX", 0.5),
+            retry_temperature_halflife=_env_float("RETRY_TEMPERATURE_HALFLIFE", 5.0),
         )
 
     @classmethod
@@ -486,6 +497,8 @@ class MinimaLlmConfig:
             # Cache
             cache_dir=data["cache_dir"] if "cache_dir" in data else base.cache_dir,
             force_refresh=bool(data["force_refresh"]) if "force_refresh" in data else base.force_refresh,
+            retry_temperature_max=float(data["retry_temperature_max"]) if "retry_temperature_max" in data else base.retry_temperature_max,
+            retry_temperature_halflife=float(data["retry_temperature_halflife"]) if "retry_temperature_halflife" in data else base.retry_temperature_halflife,
         )
 
     # ----------------------------
@@ -561,6 +574,7 @@ class MinimaLlmConfig:
         add("Cache")
         kv("cache_dir", self.cache_dir if self.cache_dir else "<disabled>")
         kv("force_refresh", self.force_refresh)
+        kv("retry_temperature", f"max={self.retry_temperature_max} halflife={self.retry_temperature_halflife}")
 
         add("Parasail batch")
         kv("prefix", self.parasail.prefix if self.parasail.prefix else "<disabled>")

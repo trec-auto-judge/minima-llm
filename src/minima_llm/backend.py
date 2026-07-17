@@ -285,6 +285,19 @@ def reset_retry_seed(token: contextvars.Token[int]) -> None:
     """Reset retry seed after call completes."""
     _retry_seed_ctx.reset(token)
 
+def retry_temperature(attempt: int, max_temp: float, halflife: float) -> float:
+    """Deterministic saturating temperature ramp for forced-refresh retries.
+
+    temp(n) = max_temp * n / (n + halflife): strictly increasing in the
+    attempt number (every attempt gets a distinct temperature, hence a
+    distinct cache key), converging to but never reaching max_temp.
+    Returns 0.0 for attempt <= 0 or when the feature is disabled.
+    """
+    if attempt <= 0 or max_temp <= 0:
+        return 0.0
+    return max_temp * attempt / (attempt + halflife)
+
+
 def get_retry_seed() -> int:
     """Get retry seed for current task."""
     return _retry_seed_ctx.get()
@@ -1146,6 +1159,21 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
                 # Increment any existing seed from request (e.g., from proxy passthrough)
                 current_seed = payload.get("seed", 0)
                 payload["seed"] = current_seed + 1
+            # Greedy decoding ignores the seed: with temperature unset/0 the
+            # server regenerates the identical completion, so retries could
+            # never recover from a deterministic failure (e.g. output-cap
+            # truncation). Re-sample with a deterministic saturating ramp.
+            # Injected at payload level only: the cache key stays canonical,
+            # so a successful retry heals the cached entry for the call.
+            if (
+                self.cfg.retry_temperature_max > 0
+                and payload.get("temperature") in (None, 0, 0.0)
+            ):
+                payload["temperature"] = retry_temperature(
+                    payload["seed"],
+                    self.cfg.retry_temperature_max,
+                    self.cfg.retry_temperature_halflife,
+                )
 
         url = self._endpoint("/v1/chat/completions")
 
