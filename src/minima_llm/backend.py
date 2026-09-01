@@ -122,7 +122,7 @@ class RateLimitInfo:
             parts.append(f"reset_in={self.reset_requests_s:.0f}s")
         if self.error_message:
             # Truncate long messages
-            msg = self.error_message[:80] + "..." if len(self.error_message) > 80 else self.error_message
+            msg = self.error_message[:255] + "..." if len(self.error_message) > 80 else self.error_message
             parts.append(f'msg="{msg}"')
         return " | ".join(parts) if parts else "(no rate limit info)"
 
