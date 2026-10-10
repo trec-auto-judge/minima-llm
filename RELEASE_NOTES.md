@@ -1,5 +1,20 @@
 # Release Notes
 
+## 0.2.7
+
+### Cache lookup across model synonyms and lookup caches
+
+Caches populated under different model names for the same model (for example `GPT-OSS-120b` and `openai/gpt-oss-120b`), or spread over several cache directories from endpoint switches, can be consolidated during a replay.
+
+- `model_synonyms` (env `MODEL_SYNONYMS`, comma-separated; yaml list): model names treated as the same model as `model`. Lookup tries the key under every synonym.
+- `cache_lookup_dirs` (env `CACHE_LOOKUP_DIRS`; yaml list): additional caches consulted read-only. Writes go to `cache_dir` only. A missing lookup database fails at backend construction.
+- Across all synonym keys and all caches the row with the newest `created_at` wins. A hit that did not come from `cache_dir` under the effective model name is copied into `cache_dir` under the effective name with the row's original timestamp, so after one replay `cache_dir` holds the newest state and the synonyms and lookup dirs can be dropped. This copy replaces an older row under the effective name when one exists.
+- `MinimaLlmResponse.cache_source` names where a cached reply came from (`primary`, `synonym:<name>`, `lookup:<dir>`, `lookup:<dir>:synonym:<name>`). The proxy prints it on every hit, `BackendPulse` counts `cache_hits_synonym` and `cache_hits_lookup`, and the `MINIMA_TRACE_FILE` line carries a `source` field (`miss` for a live call). During a replay a `llm call` line in the proxy output marks a cache hole.
+
+### Cache rows store what was hashed
+
+The sqlite table gains `model` and `canonical` columns (the exact JSON string hashed into `key`). Existing files are migrated once with `ALTER TABLE`; older rows keep NULL there. Rows written by the Parasail batch path do not fill the columns yet.
+
 ## 0.2.3
 
 ### New: Proxy Mode (`minimallm-proxy`)

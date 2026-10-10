@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar, Union, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union, TYPE_CHECKING
 import contextvars
 
 from contextlib import asynccontextmanager
@@ -56,6 +56,9 @@ class BackendPulse:
     # Request counts
     cache_hits: int = 0
     llm_calls: int = 0
+    # Subsets of cache_hits: served under a model synonym / from a lookup dir
+    cache_hits_synonym: int = 0
+    cache_hits_lookup: int = 0
 
     # Token usage
     input_tokens: int = 0
@@ -478,15 +481,37 @@ def _is_overload_status(status: int) -> bool:
 # Prompt cache (SQLite-backed)
 # ----------------------------
 
+@dataclass
+class CacheRow:
+    """One cached response as stored: the key it sits under and when it was stored."""
+    key: str
+    text: str
+    raw: Optional[Json]
+    created_at: float
+
+
 class PromptCache:
     """
     SQLite-backed prompt cache. Multi-process safe via WAL mode.
 
     This cache stores LLM responses keyed by a hash of the request parameters.
     Multiple processes can safely read/write concurrently.
+
+    Rows written since 0.2.7 also carry the model name and the canonical
+    request string that was hashed into the key, so a row can be re-keyed
+    under another model name without the original request. Older rows keep
+    NULL in those columns. A read-only cache (``read_only=True``) is opened
+    through a ``mode=ro`` URI and never migrated or written.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
+        self.db_path = db_path
+        self.read_only = read_only
+        if read_only:
+            if not os.path.exists(db_path):
+                raise FileNotFoundError(f"lookup cache not found: {db_path}")
+            self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
+            return
         self._conn = sqlite3.connect(db_path, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
@@ -497,25 +522,77 @@ class PromptCache:
                 created_at REAL NOT NULL
             )
         """)
+        # One-time schema migration: CREATE TABLE IF NOT EXISTS leaves an
+        # existing table untouched, so the audit columns are added here.
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(cache)")}
+        if "model" not in existing:
+            self._conn.execute("ALTER TABLE cache ADD COLUMN model TEXT")
+        if "canonical" not in existing:
+            self._conn.execute("ALTER TABLE cache ADD COLUMN canonical TEXT")
         self._conn.commit()
 
     def get(self, key: str) -> Optional[Tuple[str, Optional[Json]]]:
         """Retrieve cached response by key. Returns (text, raw_json) or None."""
-        row = self._conn.execute(
-            "SELECT response_text, response_raw FROM cache WHERE key = ?",
-            (key,)
-        ).fetchone()
+        row = self.get_row(key)
         if row is None:
             return None
-        raw = json.loads(row[1]) if row[1] else None
-        return (row[0], raw)
+        return (row.text, row.raw)
 
-    def put(self, key: str, text: str, raw: Optional[Json]) -> None:
-        """Store response in cache."""
+    def get_row(self, key: str) -> Optional[CacheRow]:
+        """Retrieve one cached row with its timestamp, or None."""
+        row = self._conn.execute(
+            "SELECT key, response_text, response_raw, created_at FROM cache WHERE key = ?",
+            (key,)
+        ).fetchone()
+        return self._to_row(row) if row is not None else None
+
+    def get_newest(self, keys: Sequence[str]) -> Optional[CacheRow]:
+        """The newest row among the given keys, or None when none is stored.
+
+        Ties on created_at resolve to the earliest key in ``keys``.
+        """
+        if not keys:
+            return None
+        placeholders = ",".join("?" for _ in keys)
+        rows = self._conn.execute(
+            f"SELECT key, response_text, response_raw, created_at FROM cache "
+            f"WHERE key IN ({placeholders})",
+            tuple(keys),
+        ).fetchall()
+        if not rows:
+            return None
+        order = {k: i for i, k in enumerate(keys)}
+        best = max(rows, key=lambda r: (r[3], -order[r[0]]))
+        return self._to_row(best)
+
+    @staticmethod
+    def _to_row(row: Tuple[Any, ...]) -> CacheRow:
+        raw = json.loads(row[2]) if row[2] else None
+        return CacheRow(key=row[0], text=row[1], raw=raw, created_at=float(row[3]))
+
+    def put(
+        self,
+        key: str,
+        text: str,
+        raw: Optional[Json],
+        *,
+        model: Optional[str] = None,
+        canonical: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> None:
+        """Store response in cache.
+
+        ``created_at`` defaults to now; a copy of a row from another cache
+        passes the original timestamp so the newest-wins lookup keeps
+        treating it as that generation.
+        """
+        if self.read_only:
+            raise RuntimeError(f"cache is read-only: {self.db_path}")
         raw_json = json.dumps(raw) if raw else None
         self._conn.execute(
-            "INSERT OR REPLACE INTO cache (key, response_text, response_raw, created_at) VALUES (?, ?, ?, ?)",
-            (key, text, raw_json, time.time())
+            "INSERT OR REPLACE INTO cache (key, response_text, response_raw, created_at, model, canonical) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (key, text, raw_json, created_at if created_at is not None else time.time(), model, canonical)
         )
         self._conn.commit()
 
@@ -896,6 +973,20 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             os.makedirs(cfg.cache_dir, exist_ok=True)
             self._cache_path = os.path.join(cfg.cache_dir, "minima_llm.db")
             print(f"Prompt cache: {self._cache_path}")
+        # Read-only lookup caches (opened lazily; a missing file fails here, loudly)
+        self._lookup_paths: List[str] = []
+        self._lookup_caches: Optional[List[PromptCache]] = None
+        if cfg.cache_lookup_dirs:
+            if not cfg.cache_dir:
+                raise RuntimeError("cache_lookup_dirs requires cache_dir (the cache that hits are copied into)")
+            for d in cfg.cache_lookup_dirs:
+                p = os.path.join(d, "minima_llm.db")
+                if not os.path.exists(p):
+                    raise FileNotFoundError(f"lookup cache not found: {p}")
+                self._lookup_paths.append(p)
+                print(f"Prompt cache (lookup only): {p}")
+        if cfg.model_synonyms:
+            print(f"Model synonyms for cache lookup: {', '.join(cfg.model_synonyms)}")
 
         # Backend pulse - diagnostics that persist for lifetime of backend
         self._pulse = BackendPulse()
@@ -945,6 +1036,91 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             self._cache = PromptCache(self._cache_path)
         return self._cache
 
+    def _ensure_lookup_caches(self) -> List[PromptCache]:
+        """Open the read-only lookup caches on first use."""
+        if self._lookup_caches is None:
+            self._lookup_caches = [PromptCache(p, read_only=True) for p in self._lookup_paths]
+        return self._lookup_caches
+
+    # ----------------------------
+    # Cache keys and lookup
+    # ----------------------------
+
+    def _effective_model(self, req: MinimaLlmRequest) -> str:
+        return req.model or self.cfg.model
+
+    def _lookup_models(self, model: str) -> List[str]:
+        """The model names to try for a request, effective name first.
+
+        Synonyms apply only when the effective name is the configured model
+        or one of its synonyms; a request for an unrelated model keeps its own
+        name alone.
+        """
+        family = [self.cfg.model, *self.cfg.model_synonyms]
+        if model not in family:
+            return [model]
+        names = [model]
+        for n in family:
+            if n not in names:
+                names.append(n)
+        return names
+
+    @staticmethod
+    def _canonical_request(req: MinimaLlmRequest, model: str) -> str:
+        """The exact string that is hashed into the cache key."""
+        obj: Dict[str, Any] = {"model": model, "messages": req.messages}
+        if req.temperature is not None:
+            obj["temperature"] = req.temperature
+        if req.max_tokens is not None:
+            obj["max_tokens"] = req.max_tokens
+        if req.extra:
+            obj["extra"] = req.extra
+        return json.dumps(obj, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+    @staticmethod
+    def _hash_key(canonical: str) -> str:
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def _lookup(
+        self, req: MinimaLlmRequest, model: str, canonical: str, cache_key: str,
+    ) -> Optional[Tuple[CacheRow, str]]:
+        """Newest cached row for the request across synonyms and lookup caches.
+
+        Returns (row, source) with source "primary", "synonym:<name>",
+        "lookup:<dir>" or "lookup:<dir>:synonym:<name>". A hit that did not
+        come from the primary cache under the effective name is copied into
+        the primary under the effective name, with the row's own timestamp,
+        so the primary converges to the newest state and later runs no longer
+        need the synonyms or lookup dirs.
+        """
+        primary = self._ensure_cache()
+        if primary is None:
+            return None
+        names = self._lookup_models(model)
+        keys = [cache_key] + [self._hash_key(self._canonical_request(req, n)) for n in names[1:]]
+        name_of = dict(zip(keys, names))
+
+        candidates: List[Tuple[CacheRow, str]] = []
+        row = primary.get_newest(keys)
+        if row is not None:
+            src = "primary" if row.key == cache_key else f"synonym:{name_of[row.key]}"
+            candidates.append((row, src))
+        for cache in self._ensure_lookup_caches():
+            row = cache.get_newest(keys)
+            if row is not None:
+                d = os.path.dirname(cache.db_path)
+                src = f"lookup:{d}" if row.key == cache_key else f"lookup:{d}:synonym:{name_of[row.key]}"
+                candidates.append((row, src))
+        if not candidates:
+            return None
+        # Newest wins; on equal timestamps the earlier candidate (primary first) wins.
+        best_i = max(range(len(candidates)), key=lambda i: (candidates[i][0].created_at, -i))
+        row, src = candidates[best_i]
+        if src != "primary":
+            primary.put(cache_key, row.text, row.raw, model=model, canonical=canonical,
+                        created_at=row.created_at)
+        return row, src
+
     @classmethod
     def from_env(cls) -> "OpenAIMinimaLlm":
         """Construct backend from environment variables via MinimaLlmConfig."""
@@ -961,6 +1137,10 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
             self._cache.close()
             self._cache = None
             print("Cache synched.")
+        if self._lookup_caches is not None:
+            for c in self._lookup_caches:
+                c.close()
+            self._lookup_caches = None
 
     def batch_mode(self, prefix: str):
         """
@@ -1040,15 +1220,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
 
     def _make_cache_key(self, req: MinimaLlmRequest) -> str:
         """Generate cache key from request parameters."""
-        obj: Dict[str, Any] = {"model": req.model or self.cfg.model, "messages": req.messages}
-        if req.temperature is not None:
-            obj["temperature"] = req.temperature
-        if req.max_tokens is not None:
-            obj["max_tokens"] = req.max_tokens
-        if req.extra:
-            obj["extra"] = req.extra
-        canonical = json.dumps(obj, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
+        return self._hash_key(self._canonical_request(req, self._effective_model(req)))
 
     async def _post_json(self, url: str, payload: Json) -> Tuple[int, Dict[str, str], bytes]:
         """Perform a blocking urllib POST in a thread, to keep async-friendly."""
@@ -1100,27 +1272,30 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
         # Check cache first (unless force_refresh)
         cache = self._ensure_cache()
         cache_key: Optional[str] = None
+        canonical: Optional[str] = None
+        effective_model = self._effective_model(req)
         _trace_file = os.environ.get("MINIMA_TRACE_FILE")
         if cache is not None:
-            cache_key = self._make_cache_key(req)
-            if _trace_file:
-                obj: Dict[str, Any] = {"model": req.model or self.cfg.model, "messages": req.messages}
-                if req.temperature is not None:
-                    obj["temperature"] = req.temperature
-                if req.max_tokens is not None:
-                    obj["max_tokens"] = req.max_tokens
-                if req.extra:
-                    obj["extra"] = req.extra
-                canonical = json.dumps(obj, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-                with open(_trace_file, "a") as _tf:
-                    _tf.write(json.dumps({"key": cache_key, "canonical": canonical}) + "\n")
+            canonical = self._canonical_request(req, effective_model)
+            cache_key = self._hash_key(canonical)
+            hit: Optional[Tuple[CacheRow, str]] = None
             if not (force_refresh or self.cfg.force_refresh):
                 async with self._cache_lock:  # type: ignore[union-attr]
-                    cached = cache.get(cache_key)
-                if cached is not None:
-                    self._pulse.cache_hits += 1
-                    set_last_cached(True)
-                    return MinimaLlmResponse(request_id=req.request_id, text=cached[0], raw=cached[1], cached=True)
+                    hit = self._lookup(req, effective_model, canonical, cache_key)
+            if _trace_file:
+                with open(_trace_file, "a", encoding="utf-8") as _tf:
+                    _tf.write(json.dumps({"key": cache_key, "canonical": canonical,
+                                          "source": hit[1] if hit else "miss"}) + "\n")
+            if hit is not None:
+                row, source = hit
+                self._pulse.cache_hits += 1
+                if "synonym:" in source:
+                    self._pulse.cache_hits_synonym += 1
+                if source.startswith("lookup:"):
+                    self._pulse.cache_hits_lookup += 1
+                set_last_cached(True)
+                return MinimaLlmResponse(request_id=req.request_id, text=row.text, raw=row.raw,
+                                         cached=True, cache_source=source)
 
         # Batch collection mode: queue request and return sentinel
         if self._batch_collector is not None:
@@ -1234,7 +1409,7 @@ class OpenAIMinimaLlm(AsyncMinimaLlmBackend):
 
                 if cache is not None and cache_key is not None:
                     async with self._cache_lock:  # type: ignore[union-attr]
-                        cache.put(cache_key, str(text), data)
+                        cache.put(cache_key, str(text), data, model=effective_model, canonical=canonical)
 
                 if this_request_saw_overload and self._overload_warned >= 0:
                     count = self._overload_warned

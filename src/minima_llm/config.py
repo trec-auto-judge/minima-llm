@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +36,23 @@ def _env_opt_int(name: str, default: Optional[int]) -> Optional[int]:
     if v.strip().lower() in ("none", "null"):
         return None
     return int(v)
+
+
+def _env_list(name: str) -> Tuple[str, ...]:
+    """Comma-separated environment list; empty or unset yields ()."""
+    v = _env_str(name)
+    if v is None:
+        return ()
+    return tuple(s.strip() for s in v.split(",") if s.strip())
+
+
+def _as_list(value: object) -> Tuple[str, ...]:
+    """Accept a YAML list or a comma-separated string."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(s.strip() for s in value.split(",") if s.strip())
+    return tuple(str(s) for s in value)
 
 
 def _first_non_none(*vals: Optional[str]) -> Optional[str]:
@@ -278,6 +295,16 @@ class MinimaLlmConfig:
     cache_dir: Optional[str] = None  # None = disabled
     force_refresh: bool = False  # If True, bypass cache lookup (still writes to cache)
 
+    # Additional caches consulted read-only on lookup. The newest row across
+    # cache_dir and all lookup dirs wins; a hit from a lookup dir is copied into
+    # cache_dir under the effective model name. Writes go to cache_dir only.
+    cache_lookup_dirs: Tuple[str, ...] = ()
+
+    # Model names treated as the same model as `model` for cache lookup. Keys
+    # under every synonym are tried; the newest row wins; a hit under a synonym
+    # is copied into cache_dir under the effective model name.
+    model_synonyms: Tuple[str, ...] = ()
+
     # Retry re-sampling: when a forced-refresh regeneration runs with an
     # unset/zero temperature (greedy decoding), re-sample with a deterministic
     # saturating temperature ramp so retries can escape deterministic failures
@@ -350,7 +377,7 @@ class MinimaLlmConfig:
           - MAX_ATTEMPTS, BASE_BACKOFF_S, MAX_BACKOFF_S, JITTER
           - COOLDOWN_FLOOR_S, COOLDOWN_CAP_S, COOLDOWN_HALFLIFE_S
           - COMPRESS_GZIP
-          - CACHE_DIR
+          - CACHE_DIR, CACHE_LOOKUP_DIRS (comma-separated), MODEL_SYNONYMS (comma-separated)
         """
         base_url = _env_str("OPENAI_BASE_URL")
         model = _env_str("OPENAI_MODEL")
@@ -390,6 +417,8 @@ class MinimaLlmConfig:
             # cache
             cache_dir=_env_str("CACHE_DIR"),
             force_refresh=(_env_int("CACHE_FORCE_REFRESH", 0) != 0),
+            cache_lookup_dirs=_env_list("CACHE_LOOKUP_DIRS"),
+            model_synonyms=_env_list("MODEL_SYNONYMS"),
             retry_temperature_max=_env_float("RETRY_TEMPERATURE_MAX", 0.5),
             retry_temperature_halflife=_env_float("RETRY_TEMPERATURE_HALFLIFE", 5.0),
         )
@@ -497,6 +526,8 @@ class MinimaLlmConfig:
             # Cache
             cache_dir=data["cache_dir"] if "cache_dir" in data else base.cache_dir,
             force_refresh=bool(data["force_refresh"]) if "force_refresh" in data else base.force_refresh,
+            cache_lookup_dirs=_as_list(data["cache_lookup_dirs"]) if "cache_lookup_dirs" in data else base.cache_lookup_dirs,
+            model_synonyms=_as_list(data["model_synonyms"]) if "model_synonyms" in data else base.model_synonyms,
             retry_temperature_max=float(data["retry_temperature_max"]) if "retry_temperature_max" in data else base.retry_temperature_max,
             retry_temperature_halflife=float(data["retry_temperature_halflife"]) if "retry_temperature_halflife" in data else base.retry_temperature_halflife,
         )
@@ -574,6 +605,8 @@ class MinimaLlmConfig:
         add("Cache")
         kv("cache_dir", self.cache_dir if self.cache_dir else "<disabled>")
         kv("force_refresh", self.force_refresh)
+        kv("cache_lookup_dirs", ", ".join(self.cache_lookup_dirs) if self.cache_lookup_dirs else "<none>")
+        kv("model_synonyms", ", ".join(self.model_synonyms) if self.model_synonyms else "<none>")
         kv("retry_temperature", f"max={self.retry_temperature_max} halflife={self.retry_temperature_halflife}")
 
         add("Parasail batch")

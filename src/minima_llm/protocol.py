@@ -53,6 +53,9 @@ class MinimaLlmResponse:
     cached: bool = False  # True if returned from prompt cache
     input_tokens: int = 0  # Prompt tokens (from usage.prompt_tokens)
     output_tokens: int = 0  # Completion tokens (from usage.completion_tokens)
+    # Where a cached response came from: "primary", "synonym:<model name>",
+    # "lookup:<dir>" or "lookup:<dir>:synonym:<model name>"; None for a live call.
+    cache_source: Optional[str] = None
 
 
 

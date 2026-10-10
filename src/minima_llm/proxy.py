@@ -49,6 +49,10 @@ class ProxyServer:
         print(f"  Model: {self.cfg.model}")
         print(f"  Force model: {self.force_model}")
         print(f"  Cache: {self.cfg.cache_dir or '<disabled>'}")
+        if self.cfg.cache_lookup_dirs:
+            print(f"  Lookup caches: {', '.join(self.cfg.cache_lookup_dirs)}")
+        if self.cfg.model_synonyms:
+            print(f"  Model synonyms: {', '.join(self.cfg.model_synonyms)}")
         try:
             async with server:
                 await server.serve_forever()
@@ -138,7 +142,7 @@ class ProxyServer:
 
         if isinstance(result, MinimaLlmResponse):
             if result.cached:
-                print(f"  [{request_id[:8]}] cache hit")
+                print(f"  [{request_id[:8]}] cache hit ({result.cache_source or 'primary'})")
             else:
                 print(f"  [{request_id[:8]}] llm call ({result.input_tokens}+{result.output_tokens} tok)")
 
