@@ -32,12 +32,30 @@ class ProxyServer:
         host: str = "127.0.0.1",
         port: int = 8990,
         force_model: bool = False,
+        verbose: bool = False,
     ):
         self.cfg = cfg
         self.host = host
         self.port = port
         self.force_model = force_model
+        self.verbose = verbose
         self.backend = OpenAIMinimaLlm(cfg)
+        # Request log: cache hits are counted and summarized every
+        # SUMMARY_EVERY requests; live calls and failures are printed as they
+        # happen; verbose prints every request.
+        self._hits = 0
+        self._llm_calls = 0
+        self._failures = 0
+
+    SUMMARY_EVERY = 100
+
+    def _log_request(self, request_id: str, line: str, *, hit: bool) -> None:
+        if self.verbose or not hit:
+            print(f"  [{request_id[:8]}] {line}")
+        total = self._hits + self._llm_calls + self._failures
+        if total and total % self.SUMMARY_EVERY == 0:
+            print(f"  {total} requests: {self._hits} cache hits, {self._llm_calls} llm calls, "
+                  f"{self._failures} failed")
 
     async def run(self) -> None:
         """Start the proxy server and serve forever."""
@@ -142,9 +160,12 @@ class ProxyServer:
 
         if isinstance(result, MinimaLlmResponse):
             if result.cached:
-                print(f"  [{request_id[:8]}] cache hit ({result.cache_source or 'primary'})")
+                self._hits += 1
+                self._log_request(request_id, f"cache hit ({result.cache_source or 'primary'})", hit=True)
             else:
-                print(f"  [{request_id[:8]}] llm call ({result.input_tokens}+{result.output_tokens} tok)")
+                self._llm_calls += 1
+                self._log_request(request_id, f"llm call ({result.input_tokens}+{result.output_tokens} tok)",
+                                  hit=False)
 
             if result.raw is not None:
                 # Return the full OpenAI-compatible response stored from upstream
@@ -169,7 +190,8 @@ class ProxyServer:
                 })
 
         elif isinstance(result, MinimaLlmFailure):
-            print(f"  [{request_id[:8]}] failed: {result.error_type}: {result.message}")
+            self._failures += 1
+            self._log_request(request_id, f"failed: {result.error_type}: {result.message}", hit=False)
             http_status = result.status or 502
             return http_status, json.dumps({
                 "error": {

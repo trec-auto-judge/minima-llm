@@ -76,6 +76,12 @@ def main():
         action="store_true",
         help="Override client model with configured OPENAI_MODEL",
     )
+    proxy_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print every request; by default cache hits are only counted and "
+             "summarized every 100 requests, live calls and failures are printed",
+    )
 
     args = parser.parse_args()
 
@@ -112,6 +118,7 @@ def main():
             host=args.host,
             port=args.port,
             force_model=args.force_model,
+            verbose=args.verbose,
         )
         try:
             asyncio.run(server.run())

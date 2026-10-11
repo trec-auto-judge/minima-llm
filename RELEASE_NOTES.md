@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.2.8
+
+### Quieter proxy
+
+The proxy no longer prints a line per cache hit. Hits are counted and summarized every 100 requests (`N requests: H cache hits, L llm calls, F failed`); live calls and failures are still printed as they happen, so a cache hole remains visible. `--verbose` restores the line per request.
+
 ## 0.2.7
 
 ### Cache lookup across model synonyms and lookup caches
